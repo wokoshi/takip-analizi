@@ -419,7 +419,6 @@
 </div>
 
 <script>
-// Maskelenmiş tünel ve hedef adresleri (Cloudflare / Worker isimleri görünmez)
 const _0xvault = [
     "aHR0cHM6Ly9sZXR0ZXJib3hkLXByb3h5LjExN2VtaXIyMDAyLndvcmtlcnMuZGV2Lz91cmw9",
     "aHR0cHM6Ly9sZXR0ZXJib3hkLmNvbS8=",
@@ -472,7 +471,7 @@ function kisileriAyikla(doc, hedefObje) {
     satirlar.forEach(s => {
         const a = s.querySelector("a.name");
         if (a) {
-            const uName = a.getAttribute("href").replace(/\//g, "");
+            const uName = a.getAttribute("href").replace(/\//g, "").toLowerCase();
             const img = s.querySelector("img");
             const imgUrl = img && img.getAttribute("src") ? img.getAttribute("src") : _ep(2);
             hedefObje[uName] = imgUrl;
@@ -491,35 +490,65 @@ function durumuGuncelle(statusBox) {
     `;
 }
 
+// 3'lü akıllı paralel demetleme (Mobile-safe batching)
 async function listeCek(kullaniciAdi, tip, statusBox) {
     let kisiler = {};
     const parser = new DOMParser();
-    let sayfa = 1;
 
-    while (true) {
-        durumBilgisi[tip] = `Sayfa ${sayfa} taranıyor (${Object.keys(kisiler).length} kişi)`;
+    // 1. Sayfayı çekip kontrol et
+    durumBilgisi[tip] = `Sayfa 1 taranıyor...`;
+    durumuGuncelle(statusBox);
+
+    const firstPageUrl = `${_ep(1)}${kullaniciAdi}/${tip}/`;
+    let res = await sayfayiCek(firstPageUrl);
+
+    if (res.status === 404) return null;
+    if (res.status !== 200 || !res.html) return kisiler;
+
+    const doc = parser.parseFromString(res.html, "text/html");
+    const count = kisileriAyikla(doc, kisiler);
+
+    durumBilgisi[tip] = `${Object.keys(kisiler).length} kişi bulundu`;
+    durumuGuncelle(statusBox);
+
+    // İlk sayfada 25'ten az kişi varsa tek sayfalıktır, bitir
+    if (count < 25) {
+        durumBilgisi[tip] = `Tamamlandı (${Object.keys(kisiler).length} kişi)`;
+        durumuGuncelle(statusBox);
+        return kisiler;
+    }
+
+    // Kalan sayfaları 3'erli paralel paketler halinde çek (Hız sırrı burada)
+    let currentBatchStart = 2;
+    let keepGoing = true;
+
+    while (keepGoing) {
+        const batchPages = [currentBatchStart, currentBatchStart + 1, currentBatchStart + 2];
+        durumBilgisi[tip] = `Sayfa ${batchPages[0]}-${batchPages[2]} taranıyor (${Object.keys(kisiler).length} kişi)`;
         durumuGuncelle(statusBox);
 
-        const url = sayfa === 1 
-            ? `${_ep(1)}${kullaniciAdi}/${tip}/` 
-            : `${_ep(1)}${kullaniciAdi}/${tip}/page/${sayfa}/`;
+        const promises = batchPages.map(p => sayfayiCek(`${_ep(1)}${kullaniciAdi}/${tip}/page/${p}/`));
+        const results = await Promise.all(promises);
 
-        let res = await sayfayiCek(url);
+        for (let i = 0; i < results.length; i++) {
+            const pageRes = results[i];
+            if (pageRes.status !== 200 || !pageRes.html) {
+                keepGoing = false;
+                break;
+            }
 
-        if (res.status === 404) {
-            return sayfa === 1 ? null : kisiler;
+            const pDoc = parser.parseFromString(pageRes.html, "text/html");
+            const added = kisileriAyikla(pDoc, kisiler);
+
+            if (added < 25) {
+                keepGoing = false;
+                break;
+            }
         }
 
-        if (res.status !== 200 || !res.html) break;
-
-        const doc = parser.parseFromString(res.html, "text/html");
-        const eklenen = kisileriAyikla(doc, kisiler);
-
-        if (eklenen === 0) break;
-        if (eklenen < 25) break;
-
-        sayfa++;
-        await new Promise(r => setTimeout(r, 120));
+        currentBatchStart += 3;
+        // Mobilde Letterboxd sınırlarına takılmamak için minik 60ms nefes alma
+        await new Promise(r => setTimeout(r, 60));
     }
 
     durumBilgisi[tip] = `Tamamlandı (${Object.keys(kisiler).length} kişi)`;
