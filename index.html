@@ -490,13 +490,11 @@ function durumuGuncelle(statusBox) {
     `;
 }
 
-// 3'lü akıllı paralel demetleme (Mobile-safe batching)
 async function listeCek(kullaniciAdi, tip, statusBox) {
     let kisiler = {};
     const parser = new DOMParser();
 
-    // 1. Sayfayı çekip kontrol et
-    durumBilgisi[tip] = `Sayfa 1 taranıyor...`;
+    durumBilgisi[tip] = `0 kişi bulundu...`;
     durumuGuncelle(statusBox);
 
     const firstPageUrl = `${_ep(1)}${kullaniciAdi}/${tip}/`;
@@ -508,25 +506,20 @@ async function listeCek(kullaniciAdi, tip, statusBox) {
     const doc = parser.parseFromString(res.html, "text/html");
     const count = kisileriAyikla(doc, kisiler);
 
-    durumBilgisi[tip] = `${Object.keys(kisiler).length} kişi bulundu`;
+    durumBilgisi[tip] = `${Object.keys(kisiler).length} kişi bulundu...`;
     durumuGuncelle(statusBox);
 
-    // İlk sayfada 25'ten az kişi varsa tek sayfalıktır, bitir
     if (count < 25) {
         durumBilgisi[tip] = `Tamamlandı (${Object.keys(kisiler).length} kişi)`;
         durumuGuncelle(statusBox);
         return kisiler;
     }
 
-    // Kalan sayfaları 3'erli paralel paketler halinde çek (Hız sırrı burada)
     let currentBatchStart = 2;
     let keepGoing = true;
 
     while (keepGoing) {
         const batchPages = [currentBatchStart, currentBatchStart + 1, currentBatchStart + 2];
-        durumBilgisi[tip] = `Sayfa ${batchPages[0]}-${batchPages[2]} taranıyor (${Object.keys(kisiler).length} kişi)`;
-        durumuGuncelle(statusBox);
-
         const promises = batchPages.map(p => sayfayiCek(`${_ep(1)}${kullaniciAdi}/${tip}/page/${p}/`));
         const results = await Promise.all(promises);
 
@@ -540,6 +533,10 @@ async function listeCek(kullaniciAdi, tip, statusBox) {
             const pDoc = parser.parseFromString(pageRes.html, "text/html");
             const added = kisileriAyikla(pDoc, kisiler);
 
+            // Her sayfa çekildiğinde bulunan kişi sayısını canlı güncelle
+            durumBilgisi[tip] = `${Object.keys(kisiler).length} kişi bulundu...`;
+            durumuGuncelle(statusBox);
+
             if (added < 25) {
                 keepGoing = false;
                 break;
@@ -547,7 +544,6 @@ async function listeCek(kullaniciAdi, tip, statusBox) {
         }
 
         currentBatchStart += 3;
-        // Mobilde Letterboxd sınırlarına takılmamak için minik 60ms nefes alma
         await new Promise(r => setTimeout(r, 60));
     }
 
